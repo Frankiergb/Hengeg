@@ -17,13 +17,19 @@ jobs:
           GOAL: ${{ github.event.issue.body }}
         run: |
           cat << 'EOF' > /tmp/run_ai.py
-          import os, json, urllib.request, glob
+          import os, json, urllib.request, urllib.error, glob
           paths = sorted(glob.glob("Makefile") + glob.glob("core/*.[ch]") + glob.glob("ios/**/*.swift", recursive=True))[:15]
           files = {p: open(p, errors="ignore").read()[:12000] for p in paths}
           prompt = "Goal:\n" + os.environ["GOAL"] + "\n\nRepo files:\n" + json.dumps(files) + "\n\nReturn ONLY a valid JSON object mapping file paths to complete updated file contents (no markdown, no truncation)."
-          payload = json.dumps({"model": "anthropic/claude-sonnet-4.5", "messages": [{"role": "user", "content": prompt}]}).encode()
-          req = urllib.request.Request("https://openrouter.ai", data=payload, headers={"Authorization": "Bearer " + os.environ["KEY"], "Content-Type": "application/json"})
-          res = json.loads(urllib.request.urlopen(req).read().decode())
+          payload = json.dumps({"model": "openrouter/auto", "messages": [{"role": "user", "content": prompt}]}).encode()
+          headers = {"Authorization": "Bearer " + os.environ["KEY"].strip(), "Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "HTTP-Referer": "https://github.com"}
+          req = urllib.request.Request("https://openrouter.ai", data=payload, headers=headers)
+          try:
+              raw = urllib.request.urlopen(req).read().decode()
+          except urllib.error.HTTPError as e:
+              print("API Error Body:", e.read().decode())
+              raise
+          res = json.loads(raw)
           txt = next(iter(res["choices"]))["message"]["content"].strip().strip("`")
           if txt.startswith("json"): txt = txt[4:].strip()
           for path, content in json.loads(txt).items():
