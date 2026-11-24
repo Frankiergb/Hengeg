@@ -16,7 +16,7 @@ jobs:
           KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GOAL: ${{ github.event.issue.body }}
         run: |
-          python3 - << 'EOF'
+          cat << 'EOF' > /tmp/run_ai.py
           import os, json, urllib.request, glob
           paths = sorted(glob.glob("Makefile") + glob.glob("core/*.[ch]") + glob.glob("ios/**/*.swift", recursive=True))[:15]
           files = {p: open(p, errors="ignore").read()[:12000] for p in paths}
@@ -30,6 +30,8 @@ jobs:
               os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
               open(path, "w").write(content)
           EOF
+          python3 -c "import textwrap; open('/tmp/clean.py','w').write(textwrap.dedent(open('/tmp/run_ai.py').read()))"
+          python3 /tmp/clean.py
       - uses: peter-evans/create-pull-request@v6
         with:
           title: "AI Auto-Patch: Debian EL2 KVM & ISO Boot"
