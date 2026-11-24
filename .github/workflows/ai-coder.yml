@@ -16,18 +16,20 @@ jobs:
           KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GOAL: ${{ github.event.issue.body }}
         run: |
-          python3 -c '
+          python3 - << 'EOF'
           import os, json, urllib.request, glob
-          files = {p: open(p, errors="ignore").read()[:12000] for p in sorted(glob.glob("Makefile") + glob.glob("core/*.[ch]") + glob.glob("ios/**/*.swift", recursive=True))[:15]}
-          prompt = f"Goal:\n{os.environ[\"GOAL\"]}\n\nRepo files:\n{json.dumps(files)}\n\nReturn ONLY a JSON object mapping file paths to complete updated file contents (no markdown, no truncation)."
-          req = urllib.request.Request("https://openrouter.ai", data=json.dumps({"model": "anthropic/claude-sonnet-4.5", "messages": [{"role": "user", "content": prompt}]}).encode(), headers={"Authorization": f"Bearer {os.environ[\"KEY\"]}", "Content-Type": "application/json"})
+          paths = sorted(glob.glob("Makefile") + glob.glob("core/*.[ch]") + glob.glob("ios/**/*.swift", recursive=True))[:15]
+          files = {p: open(p, errors="ignore").read()[:12000] for p in paths}
+          prompt = "Goal:\n" + os.environ["GOAL"] + "\n\nRepo files:\n" + json.dumps(files) + "\n\nReturn ONLY a valid JSON object mapping file paths to complete updated file contents (no markdown, no truncation)."
+          payload = json.dumps({"model": "anthropic/claude-sonnet-4.5", "messages": [{"role": "user", "content": prompt}]}).encode()
+          req = urllib.request.Request("https://openrouter.ai", data=payload, headers={"Authorization": "Bearer " + os.environ["KEY"], "Content-Type": "application/json"})
           res = json.loads(urllib.request.urlopen(req).read().decode())
           txt = next(iter(res["choices"]))["message"]["content"].strip().strip("`")
-          if txt.startswith("json"): txt = txt[4:]
+          if txt.startswith("json"): txt = txt[4:].strip()
           for path, content in json.loads(txt).items():
               os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
               open(path, "w").write(content)
-          '
+          EOF
       - uses: peter-evans/create-pull-request@v6
         with:
           title: "AI Auto-Patch: Debian EL2 KVM & ISO Boot"
