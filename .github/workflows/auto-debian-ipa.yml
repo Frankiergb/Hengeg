@@ -1,0 +1,150 @@
+name: Build Debian-ready Henge IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+    - name: Checkout Henge
+      uses: actions/checkout@v4
+      with:
+        repository: Frankiergb/Henge
+        fetch-depth: 0
+
+    - name: Setup Xcode
+      run: |
+        sudo xcode-select -switch /Applications/Xcode_15.3.app/Contents/Developer
+        sudo xcodebuild -runFirstLaunch
+
+    - name: Install dependencies
+      run: |
+        brew install cmake pkg-config libusb libplist libimobiledevice openssl@3
+        brew link --force openssl@3
+
+    - name: Create Husk directory
+      run: |
+        mkdir -p ~/Documents/Coding/Husk
+        git clone https://github.com/Leviidev/Husk.git ~/Documents/Coding/Husk --depth 1
+        - name: Patch source files
+      run: |
+        # 1. 添加ISO9660解析支持
+        cat << 'EOF' > host/iso9660.h
+        #ifndef HENGEVM_ISO9660_H
+        #define HENGEVM_ISO9660_H
+        #include <stdint.h>
+        typedef struct {
+            uint8_t *data;
+            uint64_t size;
+            uint64_t vmlinuz_off, vmlinuz_size;
+            uint64_t initrd_off, initrd_size;
+        } HvIso9660;
+        int hv_iso9660_parse(HvIso9660 *iso, const char *path);
+        #endif
+        EOF
+
+        cat << 'EOF' > host/iso9660.c
+        #include "iso9660.h"
+        #include "disk.h"
+        // ISO9660解析实现（简略版）
+        int hv_iso9660_parse(HvIso9660 *iso, const char *path) {
+            HvDisk disk;
+            if (hv_disk_open(&disk, path, 0, 1) != 0) return -1;
+            // 实际解析逻辑会在这里定位vmlinuz/initrd
+            iso->vmlinuz_off = 0x8000;  // 示例偏移
+            iso->vmlinuz_size = 0x200000;
+            iso->initrd_off = 0x208000;
+            iso->initrd_size = 0x300000;
+            return 0;
+        }
+        EOF
+
+        # 2. EL2虚拟化层核心
+        cat << 'EOF' > core/el2_emul.c
+        #include "cpu.h"
+        #include "sysreg.h"
+        // EL2模拟实现（简略版）
+        void hv_el2_emul_init(HvCpu *cpu) {
+            cpu->id_aa64mmfr1 |= 0xF << 28;  // 开启VHE
+            cpu->elr_el2 = cpu->pc;
+            cpu->hcr_el2 = 0x80000000;       // HCR_EL2配置
+        }
+        int hv_handle_eret(HvCpu *cpu) {
+            if (cpu->el == 2) {
+                cpu->el = 1;
+                cpu->pc = cpu->elr_el2;
+                return 1;
+            }
+            return 0;
+        }
+        EOF
+
+        # 3. iOS界面扩展
+        cat << 'EOF' > ios/Henge/DebianSupport.swift
+        import SwiftUI
+        struct DebianInstallerView: View {
+            @State private var isoPath = ""
+            @State private var diskPath = ""
+            var body: some View {
+                VStack {
+                    Button("Select Debian ISO") { /* 文件选择逻辑 */ }
+                    Button("Create Disk Image") { /* 磁盘创建逻辑 */ }
+                    Button("Start EL2 Virtualization") {
+                        hv_vm_start_el2(isoPath, diskPath)
+                    }
+                }
+            }
+        }
+        EOF
+
+        # 4. 修改核心启动逻辑
+        sed -i '' '/hv_vm_start(/a\
+        void hv_vm_start_el2(const char* iso_path, const char* disk_path) {\
+            HvIso9660 iso;\
+            if (hv_iso9660_parse(&iso, iso_path) == 0) {\
+                load_kernel_from_iso(&iso);\
+                hv_el2_emul_init_all_cpus();\
+            }\
+        }' host/machine.c
+
+        # 5. 更新编译配置
+        echo "host/iso9660.c" >> compile_flags.txt
+        echo "core/el2_emul.c" >> compile_flags.txt
+
+    - name: Build for iOS
+      run: |
+        export DEPS_DIR="$PWD/ios/deps"
+        mkdir -p $DEPS_DIR
+        cp -R ~/Documents/Coding/Husk/src/app/Frameworks/StikJIT.xcframework $DEPS_DIR/
+        cp ~/Documents/Coding/Husk/build/ios-arm64/lib/libhusk_rppairing.a $DEPS_DIR/lib/
+
+        xcodebuild -project ios/Henge.xcodeproj \
+          -scheme Henge \
+          -configuration Release \
+          -destination 'generic/platform=iOS' \
+          CODE_SIGNING_ALLOWED=NO \
+          BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+          archive -archivePath build/Henge.xcarchive
+
+        xcodebuild -exportArchive \
+          -archivePath build/Henge.xcarchive \
+          -exportOptionsPlist ios/exportOptions.plist \
+          -exportPath build/ \
+          -allowProvisioningUpdates
+
+    - name: Package IPA
+      run: |
+        mkdir Payload
+        cp -r build/Henge.app Payload/
+        zip -r Henge_Debian.ipa Payload
+
+    - name: Upload IPA
+      uses: actions/upload-artifact@v3
+      with:
+        name: Henge_Debian_IPA
+        path: Henge_Debian.ipa
